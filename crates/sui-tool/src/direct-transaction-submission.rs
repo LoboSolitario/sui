@@ -5,20 +5,25 @@ use anyhow::{Result, anyhow, bail};
 use clap::Parser;
 use fastcrypto::encoding::{Base64, Encoding};
 use fastcrypto::traits::ToFromBytes;
+use std::fs;
 use std::path::PathBuf;
 
+use bytes::Bytes;
 use sui_config::{SUI_CLIENT_CONFIG, sui_config_dir};
 use sui_core::authority_client::{AuthorityAPI, NetworkAuthorityClient};
 use sui_json_rpc_types::{
     SuiObjectData, SuiObjectDataFilter, SuiObjectDataOptions, SuiObjectResponse,
     SuiObjectResponseQuery, SuiProtocolConfigValue, SuiTransactionBlockResponseOptions,
 };
+use sui_network::tonic::IntoRequest;
 use sui_sdk::wallet_context::WalletContext;
 use sui_sdk::{SuiClient, SuiClientBuilder};
 use sui_types::base_types::SuiAddress;
 use sui_types::crypto::NetworkPublicKey;
 use sui_types::gas_coin::GasCoin;
-use sui_types::messages_grpc::SubmitTxRequest;
+use sui_types::messages_grpc::{
+    RawSubmitTxRequest, RawSubmitTxResponse, SubmitTxRequest, SubmitTxType,
+};
 use sui_types::multiaddr::Multiaddr;
 use sui_types::transaction::{Transaction, TransactionData};
 
@@ -57,12 +62,18 @@ struct Args {
     /// Where to submit transactions
     #[arg(long, value_enum, default_value_t = SubmitTarget::Validator)]
     submit_target: SubmitTarget,
+
+    /// Output path for signed transaction bytes (used with submit-target=file)
+    #[arg(long, default_value = "signed_tx.bcs")]
+    output_path: String,
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 enum SubmitTarget {
     Validator,
     Rpc,
+    SoftBundle,
+    File,
 }
 
 #[tokio::main]
@@ -95,9 +106,13 @@ async fn main() -> Result<()> {
         .filter(|(value, _)| *value > args.amount + gas_budget)
         .collect::<Vec<_>>();
 
-    if usable_coins.len() < 2 {
+    let required_coins = match args.submit_target {
+        SubmitTarget::File => 1,
+        _ => 2,
+    };
+    if usable_coins.len() < required_coins {
         bail!(
-            "Need at least 2 gas coins with balance > amount + gas_budget. Found {}",
+            "Need at least {required_coins} gas coin(s) with balance > amount + gas_budget. Found {}",
             usable_coins.len()
         );
     }
@@ -111,21 +126,30 @@ async fn main() -> Result<()> {
         gas_price,
     )
     .await?;
-    let tx2 = build_pay_sui_transaction(
-        &wallet,
-        sender,
-        &usable_coins[1].1,
-        args.amount,
-        gas_budget,
-        gas_price,
-    )
-    .await?;
+    let tx2 = if required_coins > 1 {
+        Some(
+            build_pay_sui_transaction(
+                &wallet,
+                sender,
+                &usable_coins[1].1,
+                args.amount,
+                gas_budget,
+                gas_price,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
 
     let validator_address: Multiaddr = args.validator_address.parse()?;
     let pubkey_bytes = Base64::decode(&args.validator_pubkey_b64)
         .map_err(|e| anyhow!("invalid validator pubkey base64: {e}"))?;
     let validator_pubkey = NetworkPublicKey::from_bytes(&pubkey_bytes)?;
-    let validator_client = if matches!(args.submit_target, SubmitTarget::Validator) {
+    let validator_client = if matches!(
+        args.submit_target,
+        SubmitTarget::Validator | SubmitTarget::SoftBundle
+    ) {
         Some(NetworkAuthorityClient::connect(&validator_address, validator_pubkey).await?)
     } else {
         None
@@ -137,14 +161,28 @@ async fn main() -> Result<()> {
                 validator_client.expect("validator client should be initialized");
             tokio::try_join!(
                 submit_validator(validator_client.clone(), tx1, 1),
-                submit_validator(validator_client, tx2, 2),
+                submit_validator(validator_client, tx2.expect("tx2 should be built"), 2),
             )?;
         }
         SubmitTarget::Rpc => {
             tokio::try_join!(
                 submit_rpc(client.clone(), tx1, 1),
-                submit_rpc(client, tx2, 2),
+                submit_rpc(client, tx2.expect("tx2 should be built"), 2),
             )?;
+        }
+        SubmitTarget::SoftBundle => {
+            let validator_client =
+                validator_client.expect("validator client should be initialized");
+            submit_soft_bundle(
+                validator_client,
+                vec![tx1, tx2.expect("tx2 should be built")],
+            )
+            .await?;
+        }
+        SubmitTarget::File => {
+            let tx_bytes = bcs::to_bytes(&tx1)?;
+            fs::write(&args.output_path, tx_bytes)?;
+            println!("wrote signed transaction to {}", args.output_path);
         }
     }
 
@@ -247,5 +285,25 @@ async fn submit_rpc(client: SuiClient, tx: Transaction, index: usize) -> Result<
         .execute_transaction_block(tx, SuiTransactionBlockResponseOptions::new(), None)
         .await?;
     println!("rpc tx{index}: {response:?}");
+    Ok(())
+}
+
+async fn submit_soft_bundle(client: NetworkAuthorityClient, txs: Vec<Transaction>) -> Result<()> {
+    let transactions = txs
+        .into_iter()
+        .map(|tx| bcs::to_bytes(&tx).map(Bytes::from))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let raw_request = RawSubmitTxRequest {
+        transactions,
+        submit_type: SubmitTxType::SoftBundle.into(),
+    };
+    let request = raw_request.into_request();
+    let response: RawSubmitTxResponse = client
+        .get_client_for_testing()?
+        .submit_transaction(request)
+        .await?
+        .into_inner();
+    println!("softbundle: {} results", response.results.len());
+    println!("softbundle raw: {response:?}");
     Ok(())
 }

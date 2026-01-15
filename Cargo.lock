@@ -17124,6 +17124,7 @@ dependencies = [
  "anyhow",
  "bcs",
  "bin-version",
+ "bytes",
  "clap",
  "colored",
  "comfy-table",
