@@ -11,7 +11,7 @@ use sui_config::{SUI_CLIENT_CONFIG, sui_config_dir};
 use sui_core::authority_client::{AuthorityAPI, NetworkAuthorityClient};
 use sui_json_rpc_types::{
     SuiObjectData, SuiObjectDataFilter, SuiObjectDataOptions, SuiObjectResponse,
-    SuiObjectResponseQuery, SuiProtocolConfigValue,
+    SuiObjectResponseQuery, SuiProtocolConfigValue, SuiTransactionBlockResponseOptions,
 };
 use sui_sdk::wallet_context::WalletContext;
 use sui_sdk::{SuiClient, SuiClientBuilder};
@@ -25,6 +25,7 @@ use sui_types::transaction::{Transaction, TransactionData};
 const DEFAULT_VALIDATOR_ADDR: &str = "/dns/mainnet-sui.stakingfacilities.com/tcp/10080/http";
 const DEFAULT_VALIDATOR_PUBKEY_B64: &str = "lmFPxxSliX5uh2bygMxVQy559cV3+S8VvKb/Ft4iADc=";
 const FALLBACK_GAS_BUDGET: u64 = 5_000_000;
+const MIN_GAS_BUDGET: u64 = 5_000_000;
 
 #[derive(Parser, Debug)]
 #[command(name = "direct-transaction-submission")]
@@ -52,6 +53,16 @@ struct Args {
     /// Override gas budget (in MIST). If not set, uses minimum from protocol config.
     #[arg(long)]
     gas_budget: Option<u64>,
+
+    /// Where to submit transactions
+    #[arg(long, value_enum, default_value_t = SubmitTarget::Validator)]
+    submit_target: SubmitTarget,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum SubmitTarget {
+    Validator,
+    Rpc,
 }
 
 #[tokio::main]
@@ -114,12 +125,28 @@ async fn main() -> Result<()> {
     let pubkey_bytes = Base64::decode(&args.validator_pubkey_b64)
         .map_err(|e| anyhow!("invalid validator pubkey base64: {e}"))?;
     let validator_pubkey = NetworkPublicKey::from_bytes(&pubkey_bytes)?;
-    let client = NetworkAuthorityClient::connect(&validator_address, validator_pubkey).await?;
+    let validator_client = if matches!(args.submit_target, SubmitTarget::Validator) {
+        Some(NetworkAuthorityClient::connect(&validator_address, validator_pubkey).await?)
+    } else {
+        None
+    };
 
-    tokio::try_join!(
-        submit_once(client.clone(), tx1, 1),
-        submit_once(client, tx2, 2),
-    )?;
+    match args.submit_target {
+        SubmitTarget::Validator => {
+            let validator_client =
+                validator_client.expect("validator client should be initialized");
+            tokio::try_join!(
+                submit_validator(validator_client.clone(), tx1, 1),
+                submit_validator(validator_client, tx2, 2),
+            )?;
+        }
+        SubmitTarget::Rpc => {
+            tokio::try_join!(
+                submit_rpc(client.clone(), tx1, 1),
+                submit_rpc(client, tx2, 2),
+            )?;
+        }
+    }
 
     Ok(())
 }
@@ -135,7 +162,8 @@ async fn min_gas_budget(client: &SuiClient, gas_price: u64) -> Result<u64> {
             _ => None,
         })
         .unwrap_or(FALLBACK_GAS_BUDGET);
-    Ok(base.saturating_mul(gas_price))
+    let budget = base.saturating_mul(gas_price);
+    Ok(budget.max(MIN_GAS_BUDGET))
 }
 
 async fn build_pay_sui_transaction(
@@ -201,10 +229,23 @@ async fn fetch_gas_objects(
     Ok(values_objects)
 }
 
-async fn submit_once(client: NetworkAuthorityClient, tx: Transaction, index: usize) -> Result<()> {
+async fn submit_validator(
+    client: NetworkAuthorityClient,
+    tx: Transaction,
+    index: usize,
+) -> Result<()> {
     let response = client
         .submit_transaction(SubmitTxRequest::new_transaction(tx), None)
         .await?;
-    println!("tx{index}: {response:?}");
+    println!("validator tx{index}: {response:?}");
+    Ok(())
+}
+
+async fn submit_rpc(client: SuiClient, tx: Transaction, index: usize) -> Result<()> {
+    let response = client
+        .quorum_driver_api()
+        .execute_transaction_block(tx, SuiTransactionBlockResponseOptions::new(), None)
+        .await?;
+    println!("rpc tx{index}: {response:?}");
     Ok(())
 }
