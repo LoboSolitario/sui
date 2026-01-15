@@ -120,6 +120,7 @@ async fn main() -> Result<()> {
     let tx1 = build_pay_sui_transaction(
         &wallet,
         sender,
+        *wallet.get_addresses().get(2).unwrap_or(&sender),
         &usable_coins[0].1,
         args.amount,
         gas_budget,
@@ -130,6 +131,7 @@ async fn main() -> Result<()> {
         Some(
             build_pay_sui_transaction(
                 &wallet,
+                sender,
                 sender,
                 &usable_coins[1].1,
                 args.amount,
@@ -208,6 +210,7 @@ async fn min_gas_budget(client: &SuiClient, gas_price: u64) -> Result<u64> {
 async fn build_pay_sui_transaction(
     wallet: &WalletContext,
     sender: SuiAddress,
+    receiver: SuiAddress,
     gas_coin: &SuiObjectData,
     amount: u64,
     gas_budget: u64,
@@ -217,7 +220,7 @@ async fn build_pay_sui_transaction(
     let tx_data = TransactionData::new_pay_sui(
         sender,
         vec![],
-        vec![sender],
+        vec![receiver],
         vec![amount],
         gas_payment,
         gas_budget,
