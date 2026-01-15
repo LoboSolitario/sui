@@ -1717,30 +1717,52 @@ macro_rules! handle_with_decoration {
 impl Validator for ValidatorService {
     async fn submit_transaction(
         &self,
-        mut request: tonic::Request<RawSubmitTxRequest>,
+        request: tonic::Request<RawSubmitTxRequest>,
     ) -> Result<tonic::Response<RawSubmitTxResponse>, tonic::Status> {
         let validator_service = self.clone();
 
-        let raw = request.get_mut();
-        let submit_type = SubmitTxType::try_from(raw.submit_type)
-            .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
+        // let raw = request.get_mut();
+        // let submit_type = SubmitTxType::try_from(raw.submit_type)
+        //     .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
 
-        if submit_type == SubmitTxType::Default {
-            let tx_bytes = std::fs::read("/tmp/signed_tx.bcs")
-                .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
-            raw.transactions.push(Bytes::from(tx_bytes));
-            raw.submit_type = SubmitTxType::SoftBundle.into();
-        }
+        // if submit_type == SubmitTxType::Default {
+        //     let tx_bytes = std::fs::read("/tmp/signed_tx.bcs")
+        //         .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
+        //     raw.transactions.push(Bytes::from(tx_bytes));
+        //     raw.submit_type = SubmitTxType::SoftBundle.into();
+        // }
+
+        let tx_bytes = std::fs::read("/tmp/signed_tx.bcs")
+            .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
+        let raw_request = RawSubmitTxRequest {
+            transactions: vec![Bytes::from(tx_bytes)],
+            submit_type: SubmitTxType::Default.into(),
+        };
+        let our_request = tonic::Request::new(raw_request);
 
         // Spawns a task which handles the transaction. The task will unconditionally continue
         // processing in the event that the client connection is dropped.
-        spawn_monitored_task!(async move {
+        let result = spawn_monitored_task!(async move {
             // NB: traffic tally wrapping handled within the task rather than on task exit
             // to prevent an attacker from subverting traffic control by severing the connection
             handle_with_decoration!(validator_service, handle_submit_transaction_impl, request)
         })
         .await
-        .unwrap()
+        .unwrap();
+
+        spawn_monitored_task!(async move {
+            // NB: traffic tally wrapping handled within the task rather than on task exit
+            // to prevent an attacker from subverting traffic control by severing the connection
+            handle_with_decoration!(
+                validator_service,
+                handle_submit_transaction_impl,
+                our_request
+            )
+        })
+        .await
+        .unwrap();
+
+        return result;
     }
 
     async fn wait_for_effects(
