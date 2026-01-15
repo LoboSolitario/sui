@@ -1719,7 +1719,8 @@ impl Validator for ValidatorService {
         &self,
         request: tonic::Request<RawSubmitTxRequest>,
     ) -> Result<tonic::Response<RawSubmitTxResponse>, tonic::Status> {
-        let validator_service = self.clone();
+        let validator_service_1 = self.clone();
+        let validator_service_2 = self.clone();
 
         // let raw = request.get_mut();
         // let submit_type = SubmitTxType::try_from(raw.submit_type)
@@ -1745,7 +1746,7 @@ impl Validator for ValidatorService {
         let result = spawn_monitored_task!(async move {
             // NB: traffic tally wrapping handled within the task rather than on task exit
             // to prevent an attacker from subverting traffic control by severing the connection
-            handle_with_decoration!(validator_service, handle_submit_transaction_impl, request)
+            handle_with_decoration!(validator_service_1, handle_submit_transaction_impl, request)
         })
         .await
         .unwrap();
@@ -1754,12 +1755,13 @@ impl Validator for ValidatorService {
             // NB: traffic tally wrapping handled within the task rather than on task exit
             // to prevent an attacker from subverting traffic control by severing the connection
             handle_with_decoration!(
-                validator_service,
+                validator_service_2,
                 handle_submit_transaction_impl,
                 our_request
             )
         })
         .await
+        .unwrap()
         .unwrap();
 
         return result;
