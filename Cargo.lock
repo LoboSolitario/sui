@@ -17147,6 +17147,7 @@ dependencies = [
  "sui-config",
  "sui-core",
  "sui-data-ingestion-core",
+ "sui-json-rpc-types",
  "sui-network",
  "sui-package-dump",
  "sui-protocol-config",
