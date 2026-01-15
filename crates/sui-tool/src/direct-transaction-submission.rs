@@ -183,6 +183,7 @@ async fn main() -> Result<()> {
             let tx_bytes = bcs::to_bytes(&tx1)?;
             fs::write(&args.output_path, tx_bytes)?;
             println!("wrote signed transaction to {}", args.output_path);
+            println!("transaction digest: {}", tx1.digest());
         }
     }
 
