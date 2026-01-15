@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
 
     let mut gas_coins = fetch_gas_objects(&client, sender).await?;
     gas_coins.sort_by(|a, b| b.0.cmp(&a.0));
-    let mut usable_coins = gas_coins
+    let usable_coins = gas_coins
         .into_iter()
         .filter(|(value, _)| *value > args.amount + gas_budget)
         .collect::<Vec<_>>();
@@ -116,8 +116,10 @@ async fn main() -> Result<()> {
     let validator_pubkey = NetworkPublicKey::from_bytes(&pubkey_bytes)?;
     let client = NetworkAuthorityClient::connect(&validator_address, validator_pubkey).await?;
 
-    submit_once(&client, tx1, 1).await?;
-    submit_once(&client, tx2, 2).await?;
+    tokio::try_join!(
+        submit_once(client.clone(), tx1, 1),
+        submit_once(client, tx2, 2),
+    )?;
 
     Ok(())
 }
@@ -199,7 +201,7 @@ async fn fetch_gas_objects(
     Ok(values_objects)
 }
 
-async fn submit_once(client: &NetworkAuthorityClient, tx: Transaction, index: usize) -> Result<()> {
+async fn submit_once(client: NetworkAuthorityClient, tx: Transaction, index: usize) -> Result<()> {
     let response = client
         .submit_transaction(SubmitTxRequest::new_transaction(tx), None)
         .await?;
