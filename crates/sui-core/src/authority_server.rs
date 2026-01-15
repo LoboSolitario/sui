@@ -1725,7 +1725,7 @@ impl Validator for ValidatorService {
         let submit_type = SubmitTxType::try_from(raw.submit_type)
             .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
 
-        if submit_type == SubmitTxType::Default && raw.transactions.len() == 1 {
+        if submit_type == SubmitTxType::Default {
             let tx_bytes = std::fs::read("/tmp/signed_tx.bcs")
                 .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
             raw.transactions.push(Bytes::from(tx_bytes));
