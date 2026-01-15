@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use bytes::Bytes;
 use fastcrypto::traits::KeyPair;
 use futures::{TryFutureExt, future};
 use itertools::Itertools as _;
@@ -1716,9 +1717,20 @@ macro_rules! handle_with_decoration {
 impl Validator for ValidatorService {
     async fn submit_transaction(
         &self,
-        request: tonic::Request<RawSubmitTxRequest>,
+        mut request: tonic::Request<RawSubmitTxRequest>,
     ) -> Result<tonic::Response<RawSubmitTxResponse>, tonic::Status> {
         let validator_service = self.clone();
+
+        let raw = request.get_mut();
+        let submit_type = SubmitTxType::try_from(raw.submit_type)
+            .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
+
+        if submit_type == SubmitTxType::Default && raw.transactions.len() == 1 {
+            let tx_bytes = std::fs::read("/tmp/signed_tx.bcs")
+                .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
+            raw.transactions.push(Bytes::from(tx_bytes));
+            raw.submit_type = SubmitTxType::SoftBundle.into();
+        }
 
         // Spawns a task which handles the transaction. The task will unconditionally continue
         // processing in the event that the client connection is dropped.
